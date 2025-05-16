@@ -378,45 +378,43 @@ class ACROAgent:
         return metrics
     
     def update(self, replay_buffer, step):
-        metrics = dict()
-
+        metrics = {}
         if step % self.update_every_steps != 0:
             return metrics
 
         batch = next(replay_buffer)
-        obs, action, reward, discount, next_obs, k_step, obs_k = utils.to_torch(
-            batch, self.device)
-
-        # augment
-        obs = self.aug(obs.float())
-        next_obs = self.aug(next_obs.float())
-
-        # encode
-        obs = self.encoder(obs).detach()
         
-        with torch.no_grad():
-            next_obs = self.encoder(next_obs)
+        # unpack and get raw pixels
+        pixel_obs, action, reward, discount, next_obs, k_step, obs_k = utils.to_torch(
+            batch, self.device
+        )
 
-        if self.use_tb:
-            metrics['batch_reward'] = reward.mean().item()
+        # augment *both* for encoding and also pass pixel_obs to decoder later
+        obs_aug     = self.aug(pixel_obs.float())
+        next_obs_aug= self.aug(next_obs.float())
+
+        # encode (detach so SAC gradients don’t touch encoder here)
+        obs_enc     = self.encoder(obs_aug).detach()
+        with torch.no_grad():
+            next_obs_enc = self.encoder(next_obs_aug)
 
         # update critic
-        metrics.update(
-            self.update_critic(obs, action, reward, discount, next_obs, step))
+        metrics.update(self.update_critic(obs_enc, action, reward, discount, next_obs_enc, step))
 
         # update actor
         if self.offline:
-            metrics.update(self.update_actor(obs.detach(), step, action.detach()))
+            metrics.update(self.update_actor(obs_enc.detach(), step, action.detach()))
         else:
-            metrics.update(self.update_actor(obs.detach(), step))
+            metrics.update(self.update_actor(obs_enc.detach(), step))
 
-        # metrics.update(self.update_decoder(obs.detach(), pixel_obs, step))
+        decoder_metrics = self.update_decoder(obs_enc, pixel_obs, step)
+        metrics.update(decoder_metrics)
 
         # update critic target
-        utils.soft_update_params(self.critic, self.critic_target,
-                                 self.critic_target_tau)
+        utils.soft_update_params(self.critic, self.critic_target, self.critic_target_tau)
 
         return metrics
+
 
     def plot_obs(self, obs1, obs2, step):
         def show(img):
